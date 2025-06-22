@@ -4,13 +4,18 @@ build:
   commands:
     build:
       - echo "Installing dependencies..."
+      - pip install --upgrade pip
+      - pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
       - pip install -r requirements.txt
 run:
   runtime-version: 3.8
-  command: gunicorn --bind 0.0.0.0:8000 --workers 2 --timeout 120 app:app
+  command: gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 300 --max-requests 100 --preload app:app
   network:
     port: 8000
-    env: PORT
   env:
+    - name: PORT
+      value: "8000"
     - name: PYTHONPATH
       value: /app
+    - name: PYTHONUNBUFFERED
+      value: "1"
