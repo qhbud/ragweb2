@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import json
@@ -9,15 +9,6 @@ from botocore.exceptions import ClientError
 import logging
 import tarfile
 import shutil
-
-# Import your existing RAG components
-from langchain_chroma import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-import torch
-from sentence_transformers import SentenceTransformer
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key-change-this')
@@ -31,8 +22,12 @@ logger = logging.getLogger(__name__)
 CHROMA_PATH = os.environ.get('CHROMA_PATH', '/tmp/chroma')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
-S3_CHROMA_KEY = os.environ.get('S3_CHROMA_KEY', 'chroma-db.tar.gz')  # Path to your chroma db in S3
+S3_CHROMA_KEY = os.environ.get('S3_CHROMA_KEY', 'chroma-db.tar.gz')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+# Global variables for lazy loading
+rag_system = None
+system_initialized = False
 
 def download_chroma_from_s3():
     """Download and extract Chroma database from S3"""
@@ -76,90 +71,63 @@ def download_chroma_from_s3():
         logger.error(f"Error downloading Chroma database: {e}")
         return False
 
-class GPUHuggingFaceEmbeddings:
-    """Optimized embeddings class for serverless deployment"""
-    def __init__(self, model_name="all-MiniLM-L6-v2", batch_size=32):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {self.device}")
-        
-        # Use smaller batch size for serverless environment
-        self.model = SentenceTransformer(model_name, device=self.device)
-        self.batch_size = batch_size
-        
-    def embed_documents(self, texts):
-        all_embeddings = []
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i:i+self.batch_size]
-            with torch.no_grad():
-                batch_embeddings = self.model.encode(
-                    batch, 
-                    batch_size=self.batch_size,
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True
-                )
-            all_embeddings.extend(batch_embeddings.tolist())
-        return all_embeddings
+def initialize_rag_system():
+    """Initialize the RAG system with proper error handling"""
+    global rag_system, system_initialized
     
-    def embed_query(self, text):
-        with torch.no_grad():
-            embedding = self.model.encode([text], convert_to_numpy=True, normalize_embeddings=True)
-        return embedding[0].tolist()
-
-class WebRAGSystem:
-    """Web-optimized RAG system"""
+    if system_initialized and rag_system:
+        return True
     
-    def __init__(self):
-        self.embeddings = None
-        self.vector_store = None
-        self.llm = None
-        self.qa_chain = None
-        self.initialized = False
+    try:
+        # Import heavy dependencies only when needed
+        from langchain_chroma import Chroma
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_openai import ChatOpenAI
+        from langchain.chains import RetrievalQA
+        from langchain.prompts import PromptTemplate
         
-    def initialize(self):
-        """Lazy initialization for better startup time"""
-        if self.initialized:
-            return True
-            
-        try:
-            logger.info("Initializing RAG System...")
-            
-            # Check if OpenAI API key is available
-            if not OPENAI_API_KEY:
-                logger.error("OpenAI API key not found")
+        logger.info("Initializing RAG System...")
+        
+        # Check if OpenAI API key is available
+        if not OPENAI_API_KEY:
+            logger.error("OpenAI API key not found")
+            return False
+        
+        # Download Chroma database from S3 if it doesn't exist locally
+        if not os.path.exists(CHROMA_PATH):
+            logger.info("Chroma database not found locally, downloading from S3...")
+            if not download_chroma_from_s3():
+                logger.error("Failed to download Chroma database from S3")
                 return False
+        
+        # Initialize embeddings with CPU-only for serverless
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        
+        # Load vector store
+        if not os.path.exists(CHROMA_PATH):
+            logger.error(f"Chroma database not found at {CHROMA_PATH}")
+            return False
             
-            # Download Chroma database from S3 if it doesn't exist locally
-            if not os.path.exists(CHROMA_PATH):
-                logger.info("Chroma database not found locally, downloading from S3...")
-                if not download_chroma_from_s3():
-                    logger.error("Failed to download Chroma database from S3")
-                    return False
-            
-            # Initialize embeddings
-            self.embeddings = GPUHuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-            
-            # Load vector store
-            if not os.path.exists(CHROMA_PATH):
-                logger.error(f"Chroma database not found at {CHROMA_PATH}")
-                return False
-                
-            self.vector_store = Chroma(
-                persist_directory=CHROMA_PATH,
-                embedding_function=self.embeddings
-            )
-            
-            # Initialize LLM
-            os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-            self.llm = ChatOpenAI(
-                model_name="gpt-3.5-turbo",
-                temperature=0.1,
-                max_tokens=1000,
-                request_timeout=30
-            )
-            
-            # Setup prompt template
-            template = """You are an expert legal assistant specializing in USC (United States Code) documents. 
+        vector_store = Chroma(
+            persist_directory=CHROMA_PATH,
+            embedding_function=embeddings
+        )
+        
+        # Initialize LLM
+        os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+        llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0.1,
+            max_tokens=1000,
+            timeout=30
+        )
+        
+        # Setup prompt template
+        template = """You are an expert legal assistant specializing in USC (United States Code) documents. 
 Use the following pieces of context to answer the question at the end. 
 
 Instructions:
@@ -176,77 +144,91 @@ Question: {question}
 
 Answer: """
 
-            prompt_template = PromptTemplate(
-                template=template,
-                input_variables=["context", "question"]
-            )
-            
-            # Create QA chain
-            self.qa_chain = RetrievalQA.from_chain_type(
-                llm=self.llm,
-                chain_type="stuff",
-                retriever=self.vector_store.as_retriever(
-                    search_type="similarity",
-                    search_kwargs={"k": 5}
-                ),
-                return_source_documents=True,
-                chain_type_kwargs={"prompt": prompt_template}
-            )
-            
-            self.initialized = True
-            logger.info("RAG System initialized successfully!")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize RAG system: {e}")
-            return False
-    
-    def query(self, question: str):
-        """Process a query and return formatted response"""
-        if not self.initialize():
-            return {
-                "error": "System not properly initialized",
-                "answer": "Sorry, the system is currently unavailable. Please try again later.",
-                "sources": []
-            }
+        prompt_template = PromptTemplate(
+            template=template,
+            input_variables=["context", "question"]
+        )
         
-        try:
-            # Process query
-            result = self.qa_chain({"query": question})
-            
-            # Format sources for web display
-            sources = []
-            for i, doc in enumerate(result["source_documents"], 1):
-                source_info = {
-                    "id": i,
-                    "title": doc.metadata.get("source", "Unknown Source"),
-                    "content": doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content,
-                    "metadata": doc.metadata
-                }
-                sources.append(source_info)
-            
-            return {
-                "answer": result["result"],
-                "sources": sources,
-                "num_sources": len(sources),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing query: {e}")
-            return {
-                "error": str(e),
-                "answer": "Sorry, I encountered an error processing your question. Please try again.",
-                "sources": []
-            }
+        # Create QA chain
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vector_store.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 5}
+            ),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": prompt_template}
+        )
+        
+        # Store in global variables
+        rag_system = {
+            'qa_chain': qa_chain,
+            'vector_store': vector_store,
+            'embeddings': embeddings
+        }
+        
+        system_initialized = True
+        logger.info("RAG System initialized successfully!")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize RAG system: {e}")
+        return False
 
-# Global RAG system instance
-rag_system = WebRAGSystem()
+def process_query(question: str):
+    """Process a query and return formatted response"""
+    if not initialize_rag_system():
+        return {
+            "error": "System not properly initialized",
+            "answer": "Sorry, the system is currently unavailable. Please try again later.",
+            "sources": []
+        }
+    
+    try:
+        # Process query
+        result = rag_system['qa_chain']({"query": question})
+        
+        # Format sources for web display
+        sources = []
+        for i, doc in enumerate(result["source_documents"], 1):
+            source_info = {
+                "id": i,
+                "title": doc.metadata.get("source", "Unknown Source"),
+                "content": doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content,
+                "metadata": doc.metadata
+            }
+            sources.append(source_info)
+        
+        return {
+            "answer": result["result"],
+            "sources": sources,
+            "num_sources": len(sources),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        return {
+            "error": str(e),
+            "answer": "Sorry, I encountered an error processing your question. Please try again.",
+            "sources": []
+        }
 
 @app.route('/')
 def index():
-    """Serve the main page"""
-    return render_template('index.html')
+    """Simple homepage"""
+    return jsonify({
+        "message": "USC RAG System API",
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": [
+            "/",
+            "/api/health",
+            "/api/query",
+            "/api/stats"
+        ]
+    })
 
 @app.route('/api/query', methods=['POST'])
 def api_query():
@@ -274,11 +256,7 @@ def api_query():
         logger.info(f"Processing query: {question[:100]}...")
         
         # Process the query
-        result = rag_system.query(question)
-        
-        # Add session tracking (optional)
-        if 'session_id' not in session:
-            session['session_id'] = str(uuid.uuid4())
+        result = process_query(question)
         
         return jsonify(result)
         
@@ -290,7 +268,7 @@ def api_query():
             "sources": []
         }), 500
 
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health')
 def health_check():
     """Health check endpoint"""
     try:
@@ -298,14 +276,14 @@ def health_check():
         status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "system_initialized": rag_system.initialized
+            "system_initialized": system_initialized
         }
         
         # Check if vector store is accessible
-        if rag_system.initialized and rag_system.vector_store:
+        if system_initialized and rag_system:
             try:
                 # Simple test query
-                test_docs = rag_system.vector_store.similarity_search("test", k=1)
+                test_docs = rag_system['vector_store'].similarity_search("test", k=1)
                 status["vector_store"] = "accessible"
                 status["documents_count"] = len(test_docs)
             except Exception as e:
@@ -320,20 +298,19 @@ def health_check():
             "timestamp": datetime.now().isoformat()
         }), 500
 
-@app.route('/api/stats', methods=['GET'])
+@app.route('/api/stats')
 def get_stats():
     """Get system statistics"""
     try:
         stats = {
-            "system_initialized": rag_system.initialized,
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "system_initialized": system_initialized,
             "timestamp": datetime.now().isoformat()
         }
         
-        if rag_system.initialized and rag_system.vector_store:
+        if system_initialized and rag_system:
             # Get collection info if available
             try:
-                collection = rag_system.vector_store._collection
+                collection = rag_system['vector_store']._collection
                 stats["collection_count"] = collection.count()
             except:
                 stats["collection_count"] = "unknown"
@@ -353,7 +330,7 @@ def internal_error(error):
 
 if __name__ == '__main__':
     # For local development
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8000))
     debug = os.environ.get('FLASK_ENV') == 'development'
     
     app.run(host='0.0.0.0', port=port, debug=debug)
