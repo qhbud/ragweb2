@@ -1,4 +1,27 @@
-# Use Python 3.11 slim image for better performance
+# Build stage
+FROM python:3.11-slim as build-stage
+
+# Set environment variables for build stage
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies required for building ML packages
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory for build
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Production stage
 FROM python:3.11-slim
 
 # Set environment variables
@@ -7,22 +30,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies required for your ML packages
+# Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first for better Docker layer caching
-COPY requirements.txt .
-
-# Install Python dependencies including gunicorn
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy Python packages and binaries from build stage
+COPY --from=build-stage /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=build-stage /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY . .
