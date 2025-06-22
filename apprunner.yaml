@@ -1,12 +1,5 @@
 version: 1.0
 runtime: python3
-build:
-  commands:
-    build:
-      - echo "Installing dependencies..."
-      - pip install --upgrade pip
-      - pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-      - pip install -r requirements.txt
 run:
   runtime-version: 3.11
   command: gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 300 --max-requests 100 --preload app:app
