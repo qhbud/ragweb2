@@ -29,6 +29,16 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
 rag_system = None
 system_initialized = False
 
+# Add this after your app configuration
+@app.before_first_request
+def check_environment():
+    required_vars = ['OPENAI_API_KEY', 'S3_BUCKET_NAME']
+    missing_vars = [var for var in required_vars if not os.environ.get(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {missing_vars}")
+        # You might want to set a flag here instead of failing completely
+
 def download_chroma_from_s3():
     """Download and extract Chroma database from S3"""
     if not S3_BUCKET:
