@@ -39,40 +39,104 @@ def check_environment():
         logger.error(f"Missing required environment variables: {missing_vars}")
         # You might want to set a flag here instead of failing completely
 
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import os
+import json
+import uuid
+from datetime import datetime
+import boto3
+from botocore.exceptions import ClientError
+import logging
+import tarfile
+import shutil
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'your-secret-key-change-this')
+CORS(app)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration - these should be environment variables in production
+CHROMA_PATH = os.environ.get('CHROMA_PATH', '/tmp/chroma')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
+S3_CHROMA_KEY = os.environ.get('S3_CHROMA_KEY', 'chroma-db.tar.gz')
+AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+# Global variables for lazy loading
+rag_system = None
+system_initialized = False
+
+# ADD THIS ENVIRONMENT CHECK HERE - RIGHT AFTER CONFIGURATION
+def check_required_environment():
+    """Check if all required environment variables are set"""
+    required_vars = {
+        'OPENAI_API_KEY': OPENAI_API_KEY,
+        'S3_BUCKET_NAME': S3_BUCKET
+    }
+    
+    missing_vars = [var for var, value in required_vars.items() if not value]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {missing_vars}")
+        logger.error("App will start but RAG functionality will be disabled until these are set")
+        return False
+    else:
+        logger.info("All required environment variables are set")
+        return True
+
+# Call the check at startup
+env_vars_available = check_required_environment()
+
 def download_chroma_from_s3():
-    """Download and extract Chroma database from S3"""
+    """Download Chroma database files from S3"""
     if not S3_BUCKET:
         logger.error("S3_BUCKET_NAME environment variable not set")
         return False
     
     try:
-        logger.info(f"Downloading Chroma database from S3: {S3_BUCKET}/{S3_CHROMA_KEY}")
+        logger.info(f"Downloading Chroma database from S3 bucket: {S3_BUCKET}")
         
         # Initialize S3 client
         s3_client = boto3.client('s3', region_name=AWS_REGION)
         
-        # Create temp directory
-        os.makedirs('/tmp', exist_ok=True)
-        temp_file = '/tmp/chroma-db.tar.gz'
-        
-        # Download the file
-        s3_client.download_file(S3_BUCKET, S3_CHROMA_KEY, temp_file)
-        logger.info("Downloaded Chroma database successfully")
-        
-        # Extract the database
+        # Create chroma directory
         if os.path.exists(CHROMA_PATH):
             shutil.rmtree(CHROMA_PATH)
-        
         os.makedirs(CHROMA_PATH, exist_ok=True)
         
-        with tarfile.open(temp_file, 'r:gz') as tar:
-            tar.extractall(path='/tmp')
+        # List all objects in the bucket
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=S3_BUCKET)
         
-        # Clean up temp file
-        os.remove(temp_file)
+        downloaded_files = 0
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    
+                    # Create local file path
+                    local_file_path = os.path.join(CHROMA_PATH, key)
+                    
+                    # Create directory if needed
+                    local_dir = os.path.dirname(local_file_path)
+                    if local_dir != CHROMA_PATH:
+                        os.makedirs(local_dir, exist_ok=True)
+                    
+                    # Skip if it's a directory marker
+                    if key.endswith('/'):
+                        continue
+                    
+                    # Download the file
+                    logger.info(f"Downloading: {key}")
+                    s3_client.download_file(S3_BUCKET, key, local_file_path)
+                    downloaded_files += 1
         
-        logger.info(f"Extracted Chroma database to {CHROMA_PATH}")
-        return True
+        logger.info(f"Downloaded {downloaded_files} files to {CHROMA_PATH}")
+        return downloaded_files > 0
         
     except ClientError as e:
         logger.error(f"AWS S3 error: {e}")
