@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -20,8 +21,7 @@ WORKDIR /app
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
 
-# Install Python dependencies
-# Using --no-cache-dir to reduce image size
+# Install Python dependencies including gunicorn
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
@@ -37,5 +37,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Default CMD (will be overridden by apprunner.yaml)
-CMD ["python", "app.py"]
+# Use gunicorn as the default command
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "300", "--max-requests", "100", "--preload", "app:app"]
