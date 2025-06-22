@@ -7,6 +7,8 @@ from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
 import logging
+import tarfile
+import shutil
 
 # Import your existing RAG components
 from langchain_chroma import Chroma
@@ -26,8 +28,53 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration - these should be environment variables in production
-CHROMA_PATH = os.environ.get('CHROMA_PATH', '/opt/chroma')
+CHROMA_PATH = os.environ.get('CHROMA_PATH', '/tmp/chroma')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
+S3_CHROMA_KEY = os.environ.get('S3_CHROMA_KEY', 'chroma-db.tar.gz')  # Path to your chroma db in S3
+AWS_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+def download_chroma_from_s3():
+    """Download and extract Chroma database from S3"""
+    if not S3_BUCKET:
+        logger.error("S3_BUCKET_NAME environment variable not set")
+        return False
+    
+    try:
+        logger.info(f"Downloading Chroma database from S3: {S3_BUCKET}/{S3_CHROMA_KEY}")
+        
+        # Initialize S3 client
+        s3_client = boto3.client('s3', region_name=AWS_REGION)
+        
+        # Create temp directory
+        os.makedirs('/tmp', exist_ok=True)
+        temp_file = '/tmp/chroma-db.tar.gz'
+        
+        # Download the file
+        s3_client.download_file(S3_BUCKET, S3_CHROMA_KEY, temp_file)
+        logger.info("Downloaded Chroma database successfully")
+        
+        # Extract the database
+        if os.path.exists(CHROMA_PATH):
+            shutil.rmtree(CHROMA_PATH)
+        
+        os.makedirs(CHROMA_PATH, exist_ok=True)
+        
+        with tarfile.open(temp_file, 'r:gz') as tar:
+            tar.extractall(path='/tmp')
+        
+        # Clean up temp file
+        os.remove(temp_file)
+        
+        logger.info(f"Extracted Chroma database to {CHROMA_PATH}")
+        return True
+        
+    except ClientError as e:
+        logger.error(f"AWS S3 error: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error downloading Chroma database: {e}")
+        return False
 
 class GPUHuggingFaceEmbeddings:
     """Optimized embeddings class for serverless deployment"""
@@ -81,6 +128,13 @@ class WebRAGSystem:
             if not OPENAI_API_KEY:
                 logger.error("OpenAI API key not found")
                 return False
+            
+            # Download Chroma database from S3 if it doesn't exist locally
+            if not os.path.exists(CHROMA_PATH):
+                logger.info("Chroma database not found locally, downloading from S3...")
+                if not download_chroma_from_s3():
+                    logger.error("Failed to download Chroma database from S3")
+                    return False
             
             # Initialize embeddings
             self.embeddings = GPUHuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
