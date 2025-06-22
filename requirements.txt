@@ -2,26 +2,21 @@ Flask==2.3.3
 Flask-CORS==4.0.0
 gunicorn==21.2.0
 boto3==1.29.7
-
 # LangChain - Updated versions that work together
 langchain==0.1.20
 langchain-chroma==0.1.2
 langchain-community==0.0.38
 langchain-openai==0.1.8
 langchain-core==0.1.52
-
 # ML/AI Dependencies
 sentence-transformers==2.7.0
-torch==2.1.0+cpu
-torchvision==0.16.0+cpu
-torchaudio==2.1.0+cpu
-
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
 # Vector Database
 chromadb==0.4.24
-
 # OpenAI
 openai>=1.10.0,<2.0.0
-
 # Additional required dependencies
 numpy==1.24.3
 transformers==4.35.0
