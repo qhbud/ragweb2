@@ -3,9 +3,8 @@ runtime: docker
 build:
   commands:
     build:
-      - echo "Using Dockerfile for build"
+      - echo "Building with Docker"
 run:
-  runtime-version: latest
   command: gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 300 --max-requests 100 --preload app:app
   network:
     port: 8000
