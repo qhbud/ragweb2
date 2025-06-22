@@ -1,7 +1,11 @@
 version: 1.0
-runtime: python3
+runtime: docker
+build:
+  commands:
+    build:
+      - echo "Using Dockerfile for build"
 run:
-  runtime-version: 3.11
+  runtime-version: latest
   command: gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 300 --max-requests 100 --preload app:app
   network:
     port: 8000
