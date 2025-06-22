@@ -9,7 +9,7 @@ langchain-community
 langchain-openai
 langchain-core
 # ML/AI Dependencies
-sentence-transformers
+sentence-transformers==2.7.0
 torch
 torchvision
 torchaudio
