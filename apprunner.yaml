@@ -6,7 +6,7 @@ build:
       - echo "Installing dependencies..."
       - pip install -r requirements.txt
 run:
-  runtime-version: 3.10
+  runtime-version: 3.8
   command: gunicorn --bind 0.0.0.0:8000 --workers 2 --timeout 120 app:app
   network:
     port: 8000
