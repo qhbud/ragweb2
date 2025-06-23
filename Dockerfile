@@ -1,21 +1,24 @@
-# Single-stage build for debugging
-FROM python:3.11-slim
+# Build stage
+FROM python:3.11-slim as build-stage
 
-# Set environment variables
+# Set environment variables for build stage
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
+# Install system dependencies required for building ML packages
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     build-essential \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Set working directory for build
 WORKDIR /app
 
 # Copy requirements and install dependencies
@@ -23,16 +26,32 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Production stage
+FROM python:3.11-slim as production
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy virtual environment from build stage
+COPY --from=build-stage /opt/venv /opt/venv
+
 # Copy application code
 COPY . .
-
-# Add debug script
-COPY debug_startup.py .
 
 # Create necessary directories
 RUN mkdir -p /tmp/chroma
 
-# Create non-root user
+# Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser && \
     chown -R appuser:appuser /app /tmp/chroma
 USER appuser
@@ -44,8 +63,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# For debugging: use the debug script first
-# CMD ["python", "debug_startup.py"]
-
-# For production: use gunicorn
+# Use gunicorn as the default command
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "300", "--max-requests", "100", "--preload", "app:app"]
