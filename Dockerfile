@@ -19,7 +19,7 @@ WORKDIR /app
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
 # Production stage
 FROM python:3.11-slim
@@ -38,9 +38,11 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy Python packages and binaries from build stage
-COPY --from=build-stage /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=build-stage /usr/local/bin /usr/local/bin
+# Copy entire Python installation from build stage
+COPY --from=build-stage /usr/local /usr/local
+
+# Ensure the PATH includes /usr/local/bin
+ENV PATH="/usr/local/bin:$PATH"
 
 # Copy application code
 COPY . .
